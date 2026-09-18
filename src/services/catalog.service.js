@@ -1,6 +1,7 @@
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const dns = require('dns');
 const productRepo = require('../data/repositories/productRepository');
 
 exports.search = (q) => productRepo.filterProducts(q);
@@ -97,14 +98,34 @@ exports.fetchRemoteAsset = (target, cb) => {
         return cb(new Error("Forbidden access rule triggered."));
     }
 
-    if (isForbiddenHost(parsedUrl.hostname)) {
+    const rawHostname = parsedUrl.hostname ? parsedUrl.hostname.replace(/^\[|\]$/g, '') : '';
+    if (isForbiddenHost(rawHostname)) {
         return cb(new Error("Forbidden access rule triggered."));
     }
 
-    const client = parsedUrl.protocol === 'https:' ? https : http;
-    client.get(parsedUrl, (proxyRes) => {
-        let body = '';
-        proxyRes.on('data', chunk => body += chunk);
-        proxyRes.on('end', () => cb(null, body.substring(0, 50)));
-    }).on('error', err => cb(err));
+    const performRequest = () => {
+        const client = parsedUrl.protocol === 'https:' ? https : http;
+        client.get(parsedUrl, (proxyRes) => {
+            let body = '';
+            proxyRes.on('data', chunk => body += chunk);
+            proxyRes.on('end', () => cb(null, body.substring(0, 50)));
+        }).on('error', err => cb(err));
+    };
+
+    if (net.isIP(rawHostname)) {
+        if (isPrivateIp(rawHostname)) {
+            return cb(new Error("Forbidden access rule triggered."));
+        }
+        performRequest();
+    } else {
+        dns.lookup(rawHostname, { all: true }, (err, addresses) => {
+            if (err) {
+                return cb(err);
+            }
+            if (!addresses || addresses.length === 0 || addresses.some(a => isPrivateIp(a.address) || isForbiddenHost(a.address))) {
+                return cb(new Error("Forbidden access rule triggered."));
+            }
+            performRequest();
+        });
+    }
 };
